@@ -16,6 +16,7 @@ const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 export async function POST(req: Request) {
   try {
     // Authenticate user
+    console.log("Authenticating user...");
     const session = await getServerSession(authConfig);
     if (!session?.user?.id) {
       return new Response(
@@ -23,8 +24,10 @@ export async function POST(req: Request) {
         { status: 401 }
       );
     }
+    console.log("User authenticated:", session.user.id);
 
     // Get messages from request
+    console.log("Parsing request...");
     const { messages }: { messages: Message[] } = await req.json();
     if (!messages?.length) {
       return new Response(
@@ -32,8 +35,10 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+    console.log("Messages received:", messages.length);
 
     // Get user data
+    console.log("Fetching user preferences...");
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
       select: {
@@ -50,6 +55,7 @@ export async function POST(req: Request) {
         { status: 404 }
       );
     }
+    console.log("User preferences loaded");
 
     // Create context-aware prompt
     const prompt = `
@@ -75,13 +81,16 @@ export async function POST(req: Request) {
     `;
 
     // Generate response
+    console.log("Generating AI response...");
     const result = await model.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
 
     const response = result.response.text();
+    console.log("AI response generated:", response.slice(0, 100) + "...");
 
     // Save chat to database (non-blocking)
+    console.log("Saving to database...");
     prisma.chat.create({
       data: {
         userId: user.id,
@@ -100,14 +109,30 @@ export async function POST(req: Request) {
     });
 
     // Create streaming response
+    console.log("Creating streaming response...");
     const stream = new ReadableStream({
       async start(controller) {
-        controller.enqueue(new TextEncoder().encode(response));
-        controller.close();
+        try {
+          const encoder = new TextEncoder();
+          const chunk = encoder.encode(response);
+          controller.enqueue(chunk);
+          console.log("Response chunk enqueued");
+          controller.close();
+        } catch (error) {
+          console.error("Streaming error:", error);
+          controller.error(error);
+        }
       },
     });
 
-    return new StreamingTextResponse(stream);
+    // Return streaming response with proper headers
+    return new StreamingTextResponse(stream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
 
   } catch (error) {
     console.error("Chat error:", error);
@@ -115,7 +140,12 @@ export async function POST(req: Request) {
       JSON.stringify({ 
         error: error instanceof Error ? error.message : "An error occurred" 
       }), 
-      { status: 500 }
+      { 
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
     );
   }
 }
